@@ -8,6 +8,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 )
 
 type Game struct {
@@ -33,72 +37,81 @@ func loadGames() error {
 	log.Println("Loaded", len(games), "games from games.json")
 	return nil
 }
-func getRandomGame(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Content-Type", "application/json")
 
-	players, err := strconv.Atoi(r.URL.Query().Get("players"))
-	if err != nil || players <= 0 {
-		http.Error(w, "Invalid player count", http.StatusBadRequest)
-		return
-	}
-
-	genreFilter := strings.ToLower(r.URL.Query().Get("genre"))
-	platformFilter := strings.ToLower(r.URL.Query().Get("platform"))
-
-	var filteredGames []Game
-	for _, game := range games {
-		if !game.Online || players < game.MinPlayers || players > game.MaxPlayers {
-			continue
-		}
-		if genreFilter != "" && strings.ToLower(game.Genre) != genreFilter {
-			continue
-		}
-		if platformFilter != "" {
-			match := false
-			for _, p := range game.Platforms {
-				if strings.ToLower(p) == platformFilter {
-					match = true
-					break
-				}
-			}
-			if !match {
-				continue
-			}
-		}
-		filteredGames = append(filteredGames, game)
-	}
-	randomIndex := rand.Intn(len(filteredGames))
-	randomGame := filteredGames[randomIndex]
-	json.NewEncoder(w).Encode(randomGame)
+type WSMessage struct {
+	Type     string `json:"type"`
+	Players  int    `json:"players"`
+	Genre    string `json:"genre"`
+	Platform string `json:"platform"`
 }
 
-func getGamesByPlayerCount(w http.ResponseWriter, r *http.Request) {
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
 
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Content-Type", "application/json")
-
-	players, err := strconv.Atoi(r.URL.Query().Get("players"))
-	if err != nil || players <= 0 {
-		http.Error(w, "Invalid player count", http.StatusBadRequest)
+func serveWebSocket(c *gin.Context) {
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Println("WebSocket Upgrade failed:", err)
 		return
 	}
+	defer conn.Close()
+	log.Println("Client connected via WebSocket")
 
-	genreFilter := strings.ToLower(r.URL.Query().Get("genre"))
-	platformFilter := strings.ToLower(r.URL.Query().Get("platform"))
+	for {
+		var msg WSMessage
+		if err := conn.ReadJSON(&msg); err != nil {
+			log.Println("WebSocket read error:", err)
+			break
+		}
 
-	var filteredGames []Game
+		switch msg.Type {
+		case "search":
+			results := filterGames(msg.Players, msg.Genre, msg.Platform)
+			conn.WriteJSON(gin.H{
+				"type":    "search",
+				"results": results,
+			})
+		case "random":
+			results := filterGames(msg.Players, msg.Genre, msg.Platform)
+			if len(results) == 0 {
+				conn.WriteJSON(gin.H{
+					"type":  "random",
+					"error": "No games found",
+				})
+			} else {
+				randomGame := results[rand.Intn(len(results))]
+				conn.WriteJSON(gin.H{
+					"type": "random",
+					"game": randomGame,
+				})
+			}
+		default:
+			conn.WriteJSON(gin.H{
+				"error": "Unknown message type",
+			})
+		}
+	}
+}
+
+func filterGames(players int, genre, platform string) []Game {
+	genre = strings.ToLower(genre)
+	platform = strings.ToLower(platform)
+
+	var filtered []Game
 	for _, game := range games {
 		if !game.Online || players < game.MinPlayers || players > game.MaxPlayers {
 			continue
 		}
-		if genreFilter != "" && strings.ToLower(game.Genre) != genreFilter {
+		if genre != "" && strings.ToLower(game.Genre) != genre {
 			continue
 		}
-		if platformFilter != "" {
+		if platform != "" {
 			match := false
 			for _, p := range game.Platforms {
-				if strings.ToLower(p) == platformFilter {
+				if strings.ToLower(p) == platform {
 					match = true
 					break
 				}
@@ -107,18 +120,69 @@ func getGamesByPlayerCount(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
-		filteredGames = append(filteredGames, game)
+		filtered = append(filtered, game)
+	}
+	return filtered
+}
+
+func getRandomGame(c *gin.Context) {
+	players, err := strconv.Atoi(c.Query("players"))
+	if err != nil || players <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid player count"})
+		return
 	}
 
-	json.NewEncoder(w).Encode(filteredGames)
+	genreFilter := strings.ToLower(c.Query("genre"))
+	platformFilter := strings.ToLower(c.Query("platform"))
+
+	filteredGames := filterGames(players, genreFilter, platformFilter)
+
+	if len(filteredGames) == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "No games found"})
+		return
+	}
+
+	randomGame := filteredGames[rand.Intn(len(filteredGames))]
+	c.JSON(http.StatusOK, randomGame)
+}
+
+func getGamesByPlayerCount(c *gin.Context) {
+	players, err := strconv.Atoi(c.Query("players"))
+	if err != nil || players <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid player count"})
+		return
+	}
+
+	genreFilter := strings.ToLower(c.Query("genre"))
+	platformFilter := strings.ToLower(c.Query("platform"))
+
+	filteredGames := filterGames(players, genreFilter, platformFilter)
+
+	c.JSON(http.StatusOK, filteredGames)
 }
 
 func main() {
+	rand.Seed(time.Now().UnixNano())
+
 	if err := loadGames(); err != nil {
 		log.Fatal("Failed to load games.json: ", err)
 	}
+
+	r := gin.Default()
+	r.Use(func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.Next()
+	})
+
+	// WebSocket 路由
+	r.GET("/ws", serveWebSocket)
+
+	// 原有 API 路由
+	r.GET("/games", getGamesByPlayerCount)
+	r.GET("/randomGame", getRandomGame)
+
 	log.Println("API Server running at http://localhost:8080")
-	http.HandleFunc("/games", getGamesByPlayerCount)
-	http.HandleFunc("/randomGame", getRandomGame)
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	if err := r.Run(":8080"); err != nil {
+		log.Fatal(err)
+	}
 }

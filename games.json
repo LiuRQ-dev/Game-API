@@ -142,5 +142,37 @@
         "platforms":["PC"],
         "genre": "Survival horror",
         "online":true
+    },
+    {
+        "name":"PUBG",
+        "min_players":1,
+        "max_players":100,
+        "platforms":["PC"],
+        "genre":"Battle Royale",
+        "online":true
+    },
+    {
+        "name":"Monster Hunter Wilds",
+        "min_players":1,
+        "max_players":4,
+        "platforms":["PC","Console"],
+        "genre":"Hunting",
+        "online":true
+    },
+    {
+        "name":"Crab Game",
+        "min_players":1,
+        "max_players":4,
+        "platforms":["PC"],
+        "genre":"Battle Royale",
+        "online":true
+    },
+    {
+        "name":"Rust",
+        "min_players":1,
+        "max_players":100,
+        "platforms":["PC"],
+        "genre":"Open World",
+        "online":true
     }
 ]
