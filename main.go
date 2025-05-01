@@ -174,10 +174,8 @@ func main() {
 		c.Next()
 	})
 
-	// WebSocket 路由
 	r.GET("/ws", serveWebSocket)
 
-	// 原有 API 路由
 	r.GET("/games", getGamesByPlayerCount)
 	r.GET("/randomGame", getRandomGame)
 
